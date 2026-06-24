@@ -1,0 +1,869 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Space Jump</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#000; overflow:hidden; }
+
+#hud {
+  position:fixed; pointer-events:none;
+  font-family:'Orbitron',Helvetica,Arial,sans-serif; color:#fff;
+  z-index:10; overflow:hidden;
+}
+#hs {
+  position:absolute; top:12px; left:16px;
+  font-size:20px; letter-spacing:2px;
+  text-shadow:1px 1px 3px #000;
+  transition:color 0.3s;
+}
+#hs.new-record {
+  color:#ffdd44;
+  text-shadow:0 0 12px rgba(255,220,0,0.9), 1px 1px 3px #000;
+}
+#sc {
+  position:absolute; top:12px; right:16px;
+  font-size:20px; letter-spacing:1px;
+  text-shadow:1px 1px 3px #000;
+}
+#title-logo-wrap {
+  position:absolute; top:14%; left:50%;
+  transform:translateX(-50%);
+  text-align:center; display:none; opacity:0;
+  transition:opacity 0.6s ease;
+}
+#title-logo-wrap.visible  { display:block; }
+#title-logo-wrap.faded-in { opacity:1; }
+#title-logo {
+  font-size:58px; font-weight:900; letter-spacing:7px;
+  color:#fff; font-family:'Orbitron','Arial Black',sans-serif;
+  text-shadow:
+    0 0 18px rgba(80,160,255,1), 0 0 36px rgba(80,160,255,0.6),
+    3px 3px 0 #00081a, 5px 5px 0 #00081a;
+  white-space:nowrap;
+}
+#title-dash { color:#55ccff; }
+#title-prompt {
+  position:absolute; bottom:18%; left:50%;
+  transform:translateX(-50%);
+  text-align:center; display:none; opacity:0;
+  transition:opacity 0.6s ease;
+}
+#title-prompt.visible  { display:block; }
+#title-prompt.faded-in { opacity:1; }
+#title-sub {
+  font-size:22px; letter-spacing:4px; color:#fff;
+  text-shadow:1px 1px 6px #000; margin-bottom:6px;
+  animation:pulse 1.4s ease-in-out infinite;
+}
+#title-key {
+  font-size:14px; letter-spacing:3px;
+  color:rgba(200,220,255,0.7); text-shadow:1px 1px 4px #000;
+}
+@keyframes pulse { 0%,100%{ opacity:1; } 50%{ opacity:0.35; } }
+#gameover {
+  position:absolute; top:42%; left:50%;
+  transform:translate(-50%,-50%);
+  text-align:center; display:none; opacity:0;
+  transition:opacity 0.5s ease;
+}
+#gameover.visible  { display:block; }
+#gameover.faded-in { opacity:1; }
+#go-text {
+  font-size:48px; font-weight:900; letter-spacing:8px;
+  font-family:'Orbitron','Arial Black',sans-serif; color:#ff4444;
+  text-shadow:0 0 20px rgba(255,60,60,0.8), 3px 3px 0 #200000;
+}
+#go-score {
+  font-size:20px; letter-spacing:3px; color:#fff;
+  text-shadow:1px 1px 4px #000; margin-top:10px;
+}
+#transition-canvas {
+  position:absolute; top:0; left:0;
+  pointer-events:none; z-index:20; opacity:0;
+}
+</style>
+</head>
+<body>
+<div id="hud">
+  <div id="hs">MAX &nbsp;&nbsp;<span id="hs-val">0</span>m</div>
+  <div id="sc"><span id="sc-val"></span></div>
+  <div id="title-logo-wrap">
+    <div id="title-logo">SPACE<span id="title-dash">&#8209;</span>JUMP</div>
+  </div>
+  <div id="title-prompt">
+    <div id="title-sub">Push to Start!</div>
+    <div id="title-key">&lt; Space / ↑ &gt;</div>
+  </div>
+  <div id="gameover">
+    <div id="go-text">GAME OVER</div>
+    <div id="go-score">Score: <span id="go-score-val">0</span>m</div>
+  </div>
+  <canvas id="transition-canvas"></canvas>
+</div>
+
+<script type="importmap">
+{"imports":{"three":"https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.module.js"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+/* ================================================================
+ * 定数
+ * 速度・加速度の単位はすべて /ms（ミリ秒）
+ * ================================================================ */
+
+// ワールド・画面
+const SCREEN_W        = 700;
+const SCREEN_H        = 500;
+const WORLD_HALF      = 25;
+
+// 地面
+const GROUND_W        = 200;
+const GROUND_H        = 20;
+
+// プレイヤー物理（/ms）
+const GRAVITY         = 0.000075;  // 重力加速度
+const JUMP_SPEED      = 0.02;      // ジャンプ初速（イベント時に直接適用）
+const ROLL_SPEED      = -0.7;      // 空中回転速度 [deg/ms]
+const PLAYER_RADIUS   = 0.5;
+const PLAYER_BTN_NUM  = 3;
+const PLAYER_BOB_FREQ = 12;        // アイドルボブアニメ周波数係数
+const PLAYER_BOB_AMP  = 10;        // アイドルボブ振幅 [deg]
+const PLAYER_ORIENT_Y = Math.PI * 50 / 180; // キャラクタ向き（50°）
+
+// スパイク（/ms）
+const SPIKE_NUM        = 4;
+const SPIKE_SPEED      = 0.015;    // 移動速度
+const SPIKE_RADIUS     = 1.0;
+const SPIKE_ROLL_RATE  = 60;       // theta に乗じる回転係数
+const SPIKE_SPINE_NUM  = 12;
+const SPIKE_MIN_GAP    = 5;        // リスポーン最小中心間隔
+const SPIKE_MAX_GAP    = 20;       // リスポーン最大中心間隔
+const SPIKE_Y          = -PLAYER_RADIUS; // 地面上の固定Y座標
+
+// 星（/ms）
+const STAR_NUM          = 50;
+const STAR_SPEED_TITLE  = 0.075;   // タイトル時
+const STAR_SPEED_PLAY   = 0.015;   // プレイ時
+const STAR_Y_RANGE      = 35;      // 生成Y範囲
+const STAR_Z_RANGE      = 25;      // 生成Z範囲
+
+// ロケット（/ms）
+const ROCKET_ACCEL      = 0.00025; // 加速度
+const ROCKET_WING_NUM   = 6;
+const ROCKET_WARP_X     = WORLD_HALF * 0.6; // ワープ発火X閾値
+const ROCKET_HIDE_X     = -30;     // ワープ後の退避X
+
+// 遷移（ms）
+const TX_WARP_OUT_MS      = 700;
+const TX_WARP_IN_MS       = 350;
+const TX_FADE_OUT_MS      = 800;
+const TX_FADE_IN_MS       = 500;
+const TX_GAMEOVER_DELAY_MS = 1200;
+const TX_HUD_FADE_MS      = 600;   // HUD要素フェード時間
+
+// カメラシェイク
+const SHAKE_POWER    = 0.35;
+const SHAKE_DECAY    = 0.88;       // /frame（視覚的効果のためframe基準を維持）
+
+// 崩壊エフェクト（ms）
+const BURST_GRAVITY    = 0.00015;  // /ms²
+const BURST_LIFE_MS    = 180;      // パーティクル寿命
+const BURST_FADE_START = 0.6;      // 寿命の何割でフェード開始するか
+
+// theta アキュムレータ速度（/ms）— 元の 0.01/frame ÷ (1000ms/60fps)
+const THETA_SPEED    = 0.0006;
+
+// シーン識別子
+const SCENE = Object.freeze({ TITLE: 'title', PLAY: 'play' });
+
+// 遷移ステート識別子
+const TX_STATE = Object.freeze({ IDLE: 'idle', OUT: 'out', IN: 'in' });
+
+/* ================================================================
+ * 角度ユーティリティ
+ * ================================================================ */
+const { degToRad } = THREE.MathUtils;
+
+/* ================================================================
+ * Renderer
+ * ================================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(devicePixelRatio);
+renderer.domElement.style.position = 'fixed';
+document.body.appendChild(renderer.domElement);
+
+const hud      = document.getElementById('hud');
+const txCanvas = document.getElementById('transition-canvas');
+const txCtx    = txCanvas.getContext('2d');
+let hudW = 0, hudH = 0;
+
+function resize() {
+  const asp = SCREEN_W / SCREEN_H;
+  let w = innerWidth, h = innerHeight;
+  if (w / h > asp) w = Math.floor(h * asp); else h = Math.floor(w / asp);
+  const left = Math.floor((innerWidth  - w) / 2);
+  const top  = Math.floor((innerHeight - h) / 2);
+  renderer.setSize(w, h);
+  renderer.domElement.style.left = `${left}px`;
+  renderer.domElement.style.top  = `${top}px`;
+  Object.assign(hud.style, { left: `${left}px`, top: `${top}px`, width: `${w}px`, height: `${h}px` });
+  txCanvas.width = w; txCanvas.height = h;
+  hudW = w; hudH = h;
+}
+addEventListener('resize', resize); resize();
+
+/* ================================================================
+ * Scene / Camera / Lights
+ * ================================================================ */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0, 0, 0.3);
+
+const CAM_POS = new THREE.Vector3(0, 1, 20);
+const cam     = new THREE.PerspectiveCamera(30, SCREEN_W / SCREEN_H, 1, 50);
+cam.position.copy(CAM_POS);
+cam.lookAt(0, 1, 0);
+
+scene.add(new THREE.AmbientLight(0x404060, 0.6));
+const keyLight = new THREE.DirectionalLight(0xfff0e0, 1.1);
+keyLight.position.set(2, 3, 4);
+scene.add(keyLight);
+const fillLight = new THREE.DirectionalLight(0x6080ff, 0.4);
+fillLight.position.set(-3, -1, 2);
+scene.add(fillLight);
+
+/* ================================================================
+ * カメラシェイク
+ * ================================================================ */
+const shake = {
+  _intensity: 0,
+  trigger() { this._intensity = SHAKE_POWER; },
+  update() {
+    if (this._intensity < 0.001) { this._intensity = 0; cam.position.copy(CAM_POS); return; }
+    cam.position.set(
+      CAM_POS.x + (Math.random() - 0.5) * 2 * this._intensity,
+      CAM_POS.y + (Math.random() - 0.5) * 2 * this._intensity,
+      CAM_POS.z
+    );
+    this._intensity *= SHAKE_DECAY;
+  }
+};
+
+/* ================================================================
+ * マテリアル
+ * ================================================================ */
+function stdMat(r, g, b, roughness = 0.6, metalness = 0.15) {
+  return new THREE.MeshStandardMaterial({ color: new THREE.Color(r, g, b), roughness, metalness });
+}
+const MAT = {
+  red       : stdMat(0.88, 0.22, 0.18, 0.50, 0.25),
+  darkRed   : stdMat(0.62, 0.14, 0.12, 0.55, 0.25),
+  lightBlue : stdMat(0.86, 0.89, 0.97, 0.45, 0.05),
+  black     : stdMat(0.14, 0.14, 0.16, 0.60, 0.15),
+  brown     : stdMat(0.34, 0.20, 0.15, 0.70, 0.05),
+  silver    : stdMat(0.78, 0.80, 0.84, 0.40, 0.60),
+  darkSilver: stdMat(0.62, 0.64, 0.70, 0.45, 0.55),
+  ground    : stdMat(0.45, 0.46, 0.52, 0.95, 0.05),
+  glass     : new THREE.MeshStandardMaterial({
+    color: new THREE.Color(0.55, 0.6, 0.95), roughness: 0.15, metalness: 0.5
+  }),
+  star      : new THREE.MeshStandardMaterial({
+    color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.7, roughness: 1, metalness: 0
+  }),
+};
+
+/* ================================================================
+ * プリミティブ生成ヘルパー
+ * ================================================================ */
+function mkMesh(geo, mat) { return new THREE.Mesh(geo, mat); }
+
+function mkSph(r, seg, mat) {
+  return mkMesh(new THREE.SphereGeometry(r, seg, seg), mat);
+}
+function mkCyl(r, h, seg, mat) {
+  return mkMesh(new THREE.CylinderGeometry(r, r, h, seg), mat);
+}
+function mkBox(sx, sy, sz, mat) {
+  const m = mkMesh(new THREE.BoxGeometry(1, 1, 1), mat);
+  m.scale.set(sx, sy, sz);
+  return m;
+}
+// コーン：底面を原点に置く（先端が +Y 方向）
+function mkCone(r, h, seg, mat) {
+  const geo = new THREE.ConeGeometry(r, h, seg, 3);
+  geo.translate(0, h / 2, 0);
+  return mkMesh(geo, mat);
+}
+
+/* ================================================================
+ * オブジェクト生成
+ * ================================================================ */
+function makeGround() {
+  const m = mkBox(GROUND_W, GROUND_H, 3, MAT.ground);
+  m.position.set(0, -GROUND_H / 2 - PLAYER_RADIUS, 0);
+  return m;
+}
+
+function makePlayer() {
+  const root   = new THREE.Group();
+  const idle   = new THREE.Group();
+  const orient = new THREE.Group();
+  orient.rotation.y = PLAYER_ORIENT_Y;
+
+  // 胴体
+  orient.add(mkSph(PLAYER_RADIUS, 36, MAT.lightBlue));
+  // 腕
+  const rArm = mkCyl(0.05, 0.7, 36, MAT.brown);
+  rArm.position.set( 0.4, 0.2, 0); rArm.rotation.z = degToRad(-60); orient.add(rArm);
+  const lArm = mkCyl(0.05, 0.7, 36, MAT.brown);
+  lArm.position.set(-0.4, 0.2, 0); lArm.rotation.z = degToRad( 60); orient.add(lArm);
+  // ボタン
+  for (let i = 0; i < PLAYER_BTN_NUM; i++) {
+    const ax  = degToRad(20 * i - 21);
+    const btn = mkSph(0.1, 36, MAT.brown);
+    btn.position.set(0, -Math.sin(ax) * 0.42, Math.cos(ax) * 0.42);
+    orient.add(btn);
+  }
+  // 頭
+  const head = new THREE.Group();
+  head.position.y = PLAYER_RADIUS * 1.3;
+  head.add(mkSph(PLAYER_RADIUS * 0.85, 36, MAT.lightBlue));
+  // 目
+  const rEye = mkSph(PLAYER_RADIUS * 0.22, 36, MAT.black);
+  rEye.position.set( 0.1, 0.1, 0.3); head.add(rEye);
+  const lEye = mkSph(PLAYER_RADIUS * 0.22, 36, MAT.black);
+  lEye.position.set(-0.1, 0.1, 0.3); head.add(lEye);
+  // 鼻
+  const noseCone = mkCone(0.1, 0.5, 36, MAT.red);
+  noseCone.position.set(0, -0.1, 0.2);
+  noseCone.rotation.x = degToRad(70);
+  head.add(noseCone);
+
+  orient.add(head);
+  idle.add(orient);
+  root.add(idle);
+  root.userData.idle = idle;
+  return root;
+}
+
+function makeSpike() {
+  const root = new THREE.Group();
+  root.scale.set(1, 1, 0.95);
+  root.add(mkSph(SPIKE_RADIUS, 36, MAT.black));
+  // 単眼
+  const eye = mkSph(0.3, 36, MAT.silver);
+  eye.position.set(0, 0, SPIKE_RADIUS * 0.9);
+  eye.scale.set(0.5, 0.5, 1.5);
+  root.add(eye);
+  // 棘
+  for (let i = 0; i < SPIKE_SPINE_NUM; i++) {
+    const zGrp = new THREE.Group(); zGrp.rotation.z = degToRad(30 * i);
+    const cone = mkCone(0.5, 1.0, 12, MAT.silver);
+    cone.position.y = 0.5;
+    zGrp.add(cone); root.add(zGrp);
+  }
+  return root;
+}
+
+function makeStar() {
+  const m = mkSph(1, 12, MAT.star);
+  m.scale.setScalar(0.1);
+  return m;
+}
+
+function makeRocket() {
+  const pose = new THREE.Group();
+  const spin = new THREE.Group();
+  const body = new THREE.Group();
+  body.scale.set(2, 3, 2);
+
+  const tip    = mkCone(1.0, 2.0, 12, MAT.red);       tip.position.y    =  2;    body.add(tip);
+  const upCyl  = mkCyl(1.0, 2.0, 12, MAT.silver);     upCyl.position.y  =  1;    body.add(upCyl);
+  const dnCyl  = mkCyl(1.0, 2.0, 12, MAT.darkSilver); dnCyl.position.y  = -1;    body.add(dnCyl);
+  const nozzle = mkCone(0.5, 1.0, 12, MAT.black);     nozzle.position.y = -2.5;  body.add(nozzle);
+
+  for (let i = 0; i < ROCKET_WING_NUM; i++) {
+    const wg = new THREE.Group(); wg.rotation.y = degToRad(-60 * i);
+    const wc = mkCone(0.5, 1.0, 12, MAT.darkRed);
+    wc.position.set(1, -2, 0); wc.scale.set(1.5, 2.0, 0.5);
+    wg.add(wc); body.add(wg);
+  }
+  const glass = mkSph(1.0, 24, MAT.glass);
+  glass.position.set(0, 1, 0.85);
+  glass.scale.set(0.5, 0.34, 0.45);
+  body.add(glass);
+
+  spin.add(body); pose.add(spin);
+  pose.userData.spin = spin;
+  return pose;
+}
+
+/* ================================================================
+ * シーン内オブジェクト
+ * ================================================================ */
+const groundMesh  = makeGround(); scene.add(groundMesh);
+const playerMesh  = makePlayer(); scene.add(playerMesh);
+const rocketMesh  = makeRocket(); scene.add(rocketMesh);
+
+// スパイク：{x, mesh} のオブジェクト配列として統合管理
+const spikes = Array.from({ length: SPIKE_NUM }, () => {
+  const mesh = makeSpike(); scene.add(mesh);
+  mesh.position.set(999, SPIKE_Y, 0);
+  mesh.visible = false;
+  return { x: 999, mesh };
+});
+
+const starMeshes = Array.from({ length: STAR_NUM }, () => {
+  const m = makeStar(); scene.add(m); return m;
+});
+
+/* ================================================================
+ * ゲーム状態
+ * ================================================================ */
+let theta      = 0;
+let gameScene  = SCENE.TITLE;
+let score      = 0;
+let highScore  = 0;
+let isGameOver = false;
+
+// プレイヤー
+let pX, pY, pSpeedY, pTheta, isJumping;
+
+// 星
+const sX = new Float32Array(STAR_NUM);
+const sY = new Float32Array(STAR_NUM);
+const sZ = new Float32Array(STAR_NUM);
+
+// ロケット
+let rX, rY, rSpeed, rMoving, rocketLaunched;
+
+function initStars() {
+  for (let i = 0; i < STAR_NUM; i++) {
+    sX[i] = Math.random() * WORLD_HALF * 2 - WORLD_HALF;
+    sY[i] = Math.random() * STAR_Y_RANGE - 10;
+    sZ[i] = Math.random() * STAR_Z_RANGE - STAR_Z_RANGE;
+  }
+}
+function resetRocket()  { rX = -3; rY = 0; rSpeed = 0; rMoving = false; rocketLaunched = false; }
+function resetPlayer()  { pX = -2; pY = 0; pSpeedY = 0; pTheta = 0; isJumping = false; }
+function resetSpikes()  { spikes.forEach((s, i) => { s.x = 20 * (i + 2); }); }
+
+function init() {
+  highScore  = 0;
+  score      = 0;
+  isGameOver = false;
+  gameScene  = SCENE.TITLE;
+  initStars();
+  resetPlayer();
+  resetSpikes();
+  resetRocket();
+}
+
+/* ================================================================
+ * 遷移システム (TX)
+ * ================================================================ */
+const TX = {
+  state:     TX_STATE.IDLE,
+  t:         0,
+  duration:  1,
+  nextScene: SCENE.TITLE,
+  type:      'fade',   // 'warp' | 'fade'
+  _rings:    [],
+
+  startOut(nextScene, type = 'fade') {
+    this.state     = TX_STATE.OUT;
+    this.t         = 0;
+    this.nextScene = nextScene;
+    this.type      = type;
+    this.duration  = (type === 'warp') ? TX_WARP_OUT_MS : TX_FADE_OUT_MS;
+    if (type === 'warp') this._spawnRings();
+  },
+  _spawnRings() {
+    const maxR = Math.hypot(hudW, hudH) * 0.7;
+    this._rings = Array.from({ length: 5 }, (_, i) => ({ delay: i * 60, r: 0, maxR, alpha: 1 }));
+  },
+  update(ms) {
+    if (this.state === TX_STATE.IDLE) return;
+    this.t = Math.min(this.t + ms / this.duration, 1);
+    if (this.state === TX_STATE.OUT && this.t >= 1) {
+      _doSceneSwitch(this.nextScene);
+      this.state    = TX_STATE.IN;
+      this.t        = 0;
+      this.duration = (this.type === 'warp') ? TX_WARP_IN_MS : TX_FADE_IN_MS;
+    } else if (this.state === TX_STATE.IN && this.t >= 1) {
+      this.state = TX_STATE.IDLE;
+      this.t     = 0;
+    }
+  },
+  draw() {
+    txCtx.clearRect(0, 0, hudW, hudH);
+    if (this.state === TX_STATE.IDLE) { txCanvas.style.opacity = '0'; return; }
+    txCanvas.style.opacity = '1';
+
+    const cx = hudW / 2, cy = hudH / 2;
+
+    if (this.state === TX_STATE.OUT) {
+      if (this.type === 'warp') {
+        const elapsed = this.t * this.duration;
+        txCtx.save();
+        for (const ring of this._rings) {
+          const rt = Math.max(0, elapsed - ring.delay) / (this.duration - ring.delay);
+          if (rt <= 0) continue;
+          const p = easeOut(Math.min(rt, 1));
+          ring.r = ring.maxR * p; ring.alpha = 1 - p;
+          txCtx.beginPath();
+          txCtx.arc(cx, cy, ring.r, 0, Math.PI * 2);
+          txCtx.strokeStyle = `rgba(100,200,255,${ring.alpha * 0.8})`;
+          txCtx.lineWidth   = (1 - p) * 12 + 2;
+          txCtx.stroke();
+          const grd = txCtx.createRadialGradient(cx, cy, ring.r * 0.7, cx, cy, ring.r);
+          grd.addColorStop(0, `rgba(60,180,255,0)`);
+          grd.addColorStop(1, `rgba(60,180,255,${ring.alpha * 0.25})`);
+          txCtx.fillStyle = grd; txCtx.fill();
+        }
+        txCtx.restore();
+        const flash = easeIn(Math.max(0, this.t * 2 - 1));
+        if (flash > 0) {
+          txCtx.fillStyle = `rgba(200,230,255,${flash})`;
+          txCtx.fillRect(0, 0, hudW, hudH);
+        }
+      } else {
+        txCtx.fillStyle = `rgba(0,0,12,${easeIn(this.t)})`;
+        txCtx.fillRect(0, 0, hudW, hudH);
+      }
+    } else {
+      const alpha = 1 - easeOut(this.t);
+      txCtx.fillStyle = (this.type === 'warp')
+        ? `rgba(200,230,255,${alpha})`
+        : `rgba(0,0,12,${alpha})`;
+      txCtx.fillRect(0, 0, hudW, hudH);
+    }
+  },
+  get isTransitioning() { return this.state !== TX_STATE.IDLE; }
+};
+
+const easeIn  = t => t * t;
+const easeOut = t => 1 - (1 - t) * (1 - t);
+
+function _doSceneSwitch(next) {
+  gameScene = next;
+  score = 0; isGameOver = false;
+  resetPlayer();
+  resetSpikes();
+  if (next === SCENE.TITLE) {
+    resetRocket();
+    clearBurst();
+  }
+}
+
+/* ================================================================
+ * 更新 — プレイヤー
+ * ================================================================ */
+function updatePlayer(ms) {
+  pSpeedY -= GRAVITY * ms;
+  if (isJumping) { pY += pSpeedY * ms; pTheta += ROLL_SPEED * ms; }
+  if (pY <= 0)   { pY = 0; pSpeedY = 0; isJumping = false; pTheta = 0; }
+  playerMesh.position.set(pX, pY, 0);
+  playerMesh.rotation.z = degToRad(pTheta);
+  playerMesh.userData.idle.rotation.z = isJumping
+    ? 0
+    : degToRad(Math.sin(theta * PLAYER_BOB_FREQ) * PLAYER_BOB_AMP - PLAYER_BOB_AMP / 2);
+}
+
+/* ================================================================
+ * 更新 — スパイク
+ * ================================================================ */
+function safeSpikeRespawnX(idx) {
+  let rightmostX = -Infinity;
+  for (let j = 0; j < SPIKE_NUM; j++) {
+    if (j !== idx && spikes[j].x > rightmostX) rightmostX = spikes[j].x;
+  }
+  if (rightmostX === -Infinity) rightmostX = WORLD_HALF;
+  return rightmostX + SPIKE_MIN_GAP + Math.random() * (SPIKE_MAX_GAP - SPIKE_MIN_GAP);
+}
+
+function updateSpikes(ms) {
+  for (let i = 0; i < SPIKE_NUM; i++) {
+    const sp = spikes[i];
+    sp.x -= SPIKE_SPEED * ms;
+
+    if (!isGameOver) {
+      const dx = sp.x - pX, dy = SPIKE_Y - pY;
+      if (dx * dx + dy * dy < (SPIKE_RADIUS + PLAYER_RADIUS) ** 2) {
+        isGameOver = true;
+        shake.trigger();
+        spawnBurst(pX, pY);
+        setTimeout(() => TX.startOut(SCENE.TITLE, 'fade'), TX_GAMEOVER_DELAY_MS);
+      }
+    }
+    if (sp.x < -WORLD_HALF) sp.x = safeSpikeRespawnX(i);
+    sp.mesh.position.set(sp.x, SPIKE_Y, 0);
+    sp.mesh.rotation.z = theta * SPIKE_ROLL_RATE;
+  }
+}
+
+/* ================================================================
+ * 更新 — 星
+ * ================================================================ */
+function updateStars(ms) {
+  const spd = (gameScene === SCENE.PLAY ? STAR_SPEED_PLAY : STAR_SPEED_TITLE) * ms;
+  for (let i = 0; i < STAR_NUM; i++) {
+    sX[i] -= spd;
+    if (sX[i] < -WORLD_HALF) {
+      sX[i] = Math.random() * WORLD_HALF + WORLD_HALF;
+      sY[i] = Math.random() * STAR_Y_RANGE - 10;
+      sZ[i] = Math.random() * STAR_Z_RANGE - STAR_Z_RANGE;
+    }
+    starMeshes[i].position.set(sX[i], sY[i], sZ[i]);
+  }
+}
+
+/* ================================================================
+ * 更新 — ロケット
+ * ================================================================ */
+function updateRocket(ms) {
+  rocketMesh.userData.spin.rotation.y = theta * 3;
+
+  if (gameScene === SCENE.TITLE) {
+    rY = Math.sin(theta * 4) * 0.8;
+    if (rMoving) {
+      rSpeed += ROCKET_ACCEL * ms;
+      rX     += rSpeed * ms;
+      if (rX > ROCKET_WARP_X && !TX.isTransitioning) {
+        TX.startOut(SCENE.PLAY, 'warp');
+        rMoving = false; rocketLaunched = false;
+        rX = ROCKET_HIDE_X; rSpeed = 0;
+      }
+    }
+    rocketMesh.position.set(rX, rY + 1, -20);
+    rocketMesh.rotation.set(0, 0, degToRad(-90));
+  } else {
+    const mx = new THREE.Matrix4()
+      .makeTranslation(0, 0, 10)
+      .multiply(new THREE.Matrix4().makeRotationX(theta * 3))
+      .multiply(new THREE.Matrix4().makeRotationZ(Math.PI))
+      .multiply(new THREE.Matrix4().makeTranslation(0, 0, 30));
+    mx.decompose(rocketMesh.position, rocketMesh.quaternion, new THREE.Vector3());
+    rocketMesh.scale.set(1, 1, 1);
+  }
+}
+
+/* ================================================================
+ * 崩壊エフェクト (Burst)
+ * ================================================================ */
+const burstParticles = [];
+
+// makePlayer の orient.rotation.y と一致させる
+const BURST_COS = Math.cos(PLAYER_ORIENT_Y);
+const BURST_SIN = Math.sin(PLAYER_ORIENT_Y);
+
+function spawnBurst(wx, wy) {
+  playerMesh.visible = false;
+
+  // [geoFn, mat, lx, ly, lz] — materialはtransparentクローンで事前生成
+  const parts = [
+    [() => new THREE.SphereGeometry(PLAYER_RADIUS,          16, 16), MAT.lightBlue,  0,                          0,      0   ],
+    [() => new THREE.SphereGeometry(PLAYER_RADIUS * 0.85,   16, 16), MAT.lightBlue,  0,     PLAYER_RADIUS * 1.3,       0   ],
+    [() => new THREE.SphereGeometry(PLAYER_RADIUS * 0.22,    8,  8), MAT.black,       0.1,   PLAYER_RADIUS * 1.3 + 0.1, 0.3 ],
+    [() => new THREE.SphereGeometry(PLAYER_RADIUS * 0.22,    8,  8), MAT.black,      -0.1,   PLAYER_RADIUS * 1.3 + 0.1, 0.3 ],
+    [() => new THREE.ConeGeometry(0.08, 0.4, 8),                     MAT.red,         0,     PLAYER_RADIUS * 1.3 - 0.1, 0.45],
+    [() => new THREE.SphereGeometry(0.1,  8,  8),                    MAT.brown,       0,     0.15,  0.42],
+    [() => new THREE.SphereGeometry(0.1,  8,  8),                    MAT.brown,       0,    -0.07,  0.42],
+    [() => new THREE.SphereGeometry(0.1,  8,  8),                    MAT.brown,       0,    -0.28,  0.42],
+    [() => new THREE.CylinderGeometry(0.05, 0.05, 0.7, 8),           MAT.brown,       0.4,   0.2,   0   ],
+    [() => new THREE.CylinderGeometry(0.05, 0.05, 0.7, 8),           MAT.brown,      -0.4,   0.2,   0   ],
+  ];
+
+  for (const [geoFn, mat, lx, ly, lz] of parts) {
+    const clonedMat = mat.clone();
+    clonedMat.transparent = true;
+    clonedMat.opacity = 1;
+    const mesh = new THREE.Mesh(geoFn(), clonedMat);
+    scene.add(mesh);
+    mesh.position.set(
+      wx + lx * BURST_COS - lz * BURST_SIN,
+      wy + ly,
+           lx * BURST_SIN + lz * BURST_COS
+    );
+    burstParticles.push({
+      mesh,
+      vx: (Math.random() - 0.5) * 0.048,
+      vy: Math.random() * 0.02 + 0.005 + (ly / (PLAYER_RADIUS * 2)) * 0.0125,
+      vz: (Math.random() - 0.5) * 0.02,
+      rx: (Math.random() - 0.5) * 0.075,
+      ry: (Math.random() - 0.5) * 0.075,
+      rz: (Math.random() - 0.5) * 0.075,
+      life: 0
+    });
+  }
+}
+
+function updateBurst(ms) {
+  for (let i = burstParticles.length - 1; i >= 0; i--) {
+    const p = burstParticles[i];
+    p.life += ms;
+    if (p.life >= BURST_LIFE_MS) {
+      scene.remove(p.mesh);
+      p.mesh.geometry.dispose();
+      p.mesh.material.dispose();
+      burstParticles.splice(i, 1);
+      continue;
+    }
+    p.vy -= BURST_GRAVITY * ms;
+    p.mesh.position.x += p.vx * ms;
+    p.mesh.position.y += p.vy * ms;
+    p.mesh.position.z += p.vz * ms;
+    if (p.mesh.position.y < -0.3) {
+      p.mesh.position.y = -0.3;
+      p.vy *= -0.35; p.vx *= 0.7;
+    }
+    p.mesh.rotation.x += p.rx * ms;
+    p.mesh.rotation.y += p.ry * ms;
+    p.mesh.rotation.z += p.rz * ms;
+    const fade = 1 - Math.max(0,
+      (p.life - BURST_LIFE_MS * BURST_FADE_START) / (BURST_LIFE_MS * (1 - BURST_FADE_START))
+    );
+    p.mesh.material.opacity = fade;
+  }
+}
+
+function clearBurst() {
+  for (const p of burstParticles) {
+    scene.remove(p.mesh);
+    p.mesh.geometry.dispose();
+    p.mesh.material.dispose();
+  }
+  burstParticles.length = 0;
+  playerMesh.visible = true;
+}
+
+/* ================================================================
+ * HUD
+ * ================================================================ */
+const elHsVal       = document.getElementById('hs-val');
+const elScVal       = document.getElementById('sc-val');
+const elHs          = document.getElementById('hs');
+const elTitleLogo   = document.getElementById('title-logo-wrap');
+const elTitlePrompt = document.getElementById('title-prompt');
+const elTitleLogoTx = document.getElementById('title-logo');
+const elGameover    = document.getElementById('gameover');
+const elGoScore     = document.getElementById('go-score-val');
+
+let _lastHS      = 0;
+let _titleShown  = false;
+let _goShown     = false;
+
+function setFadeEl(el, show) {
+  const cur = el.classList.contains('visible');
+  if (show === cur) return;
+  if (show) {
+    el.classList.add('visible');
+    requestAnimationFrame(() => el.classList.add('faded-in'));
+  } else {
+    el.classList.remove('faded-in');
+    setTimeout(() => el.classList.remove('visible'), TX_HUD_FADE_MS);
+  }
+}
+
+function updateHUD() {
+  elHsVal.textContent = highScore;
+  if (highScore > _lastHS && _lastHS > 0) {
+    elHs.classList.add('new-record');
+    setTimeout(() => elHs.classList.remove('new-record'), 2000);
+  }
+  _lastHS = highScore;
+
+  elScVal.textContent = (gameScene === SCENE.PLAY && !TX.isTransitioning)
+    ? `${Math.floor(score)}m` : '';
+
+  const showTitle = gameScene === SCENE.TITLE && !TX.isTransitioning;
+  if (showTitle !== _titleShown) {
+    _titleShown = showTitle;
+    setFadeEl(elTitleLogo,   showTitle);
+    setFadeEl(elTitlePrompt, showTitle);
+  }
+  if (showTitle) elTitleLogoTx.style.transform = `translateY(${Math.sin(theta * 3) * 4}px)`;
+
+  const showGO = isGameOver && gameScene === SCENE.PLAY && !TX.isTransitioning;
+  if (showGO !== _goShown) {
+    _goShown = showGO;
+    if (showGO) elGoScore.textContent = Math.floor(score);
+    setFadeEl(elGameover, showGO);
+  }
+}
+
+/* ================================================================
+ * 入力
+ * ================================================================ */
+function jump() {
+  if (!isJumping && gameScene === SCENE.PLAY && !TX.isTransitioning) {
+    isJumping = true; pSpeedY = JUMP_SPEED; pY += pSpeedY;
+  }
+}
+function onInput() {
+  if (gameScene === SCENE.TITLE && !TX.isTransitioning && !rocketLaunched) {
+    rocketLaunched = true; rMoving = true; rSpeed = -0.05;
+  }
+  jump();
+}
+addEventListener('keydown', e => {
+  if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); onInput(); }
+});
+renderer.domElement.addEventListener('click', onInput);
+renderer.domElement.addEventListener('touchstart', e => { e.preventDefault(); onInput(); }, { passive: false });
+
+/* ================================================================
+ * メインループ
+ * ================================================================ */
+let lastTime = 0;
+function animate(now) {
+  requestAnimationFrame(animate);
+  const ms = Math.min(now - lastTime, 100);
+  lastTime = now;
+
+  theta += THETA_SPEED * ms;
+  TX.update(ms);
+
+  updateStars(ms);
+  updateRocket(ms);
+  updateBurst(ms);
+
+  const inGame = gameScene === SCENE.PLAY;
+  groundMesh.visible = inGame;
+  if (!isGameOver) playerMesh.visible = inGame;
+  spikes.forEach(s => { s.mesh.visible = inGame && !TX.isTransitioning; });
+
+  if (inGame && !TX.isTransitioning) {
+    if (!isGameOver) {
+      score += SPIKE_SPEED * ms;
+      updatePlayer(ms);
+      updateSpikes(ms);
+    }
+  } else if (inGame) {
+    updatePlayer(ms); // 遷移中もプレイヤーは落下継続
+  }
+
+  if (isGameOver && gameScene === SCENE.PLAY) {
+    if (highScore < Math.floor(score)) highScore = Math.floor(score);
+  }
+
+  updateHUD();
+  shake.update();
+  renderer.render(scene, cam);
+  TX.draw();
+}
+
+/* ================================================================
+ * 起動
+ * ================================================================ */
+init();
+lastTime = performance.now();
+requestAnimationFrame(animate);
+</script>
+</body>
+</html>
