@@ -101,7 +101,7 @@ body { background: #000; overflow: hidden; }
 <body>
 <div id="hud">
   <div id="hud-stage">
-    <div id="hs">MAX &nbsp;&nbsp;<span id="hs-val">0</span>m</div>
+    <div id="hs">MAX &nbsp;<span id="hs-val">0</span>m</div>
     <div id="sc"><span id="sc-val"></span></div>
     <div id="title-logo-wrap">
       <div id="title-logo">SPACE<span id="title-dash">&#8209;</span>JUMP</div>
@@ -233,7 +233,7 @@ const ROCKET_TITLE_Z    = -20;
 const ROCKET_TITLE_Y_OFS = 1.8;               // タイトル時 Y 座標オフセット
 const ROCKET_TITLE_ROLL_RAD = degToRad(-90); // タイトル時の機体ロール（左向き固定）
 const ROCKET_TITLE_SPIN  = 3;               // タイトル時 theta 自転係数
-const ROCKET_TITLE_BOB_FREQ = 4;            // タイトル時 Y 揺れの theta 乗算係数
+const ROCKET_TITLE_BOB_FREQ = 5;            // タイトル時 Y 揺れの theta 乗算係数
 const ROCKET_TITLE_BOB_AMP  = 0.8;          // タイトル時 Y 揺れ振幅
 const ROCKET_PLAY_SPIN   = 1;               // プレイ時 theta 自転 / 公転係数
 const ROCKET_ORBIT_Z     = 10;              // プレイ時 公転中心 Z
