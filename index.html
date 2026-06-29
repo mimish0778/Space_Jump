@@ -39,14 +39,18 @@ body { background: #000; overflow: hidden; }
   font-size: 20px; letter-spacing: 1px;
   text-shadow: 1px 1px 3px #000;
 }
-#title-logo-wrap {
-  position: absolute; top: 8%; left: 50%;
-  transform: translateX(-50%);
+/* タイトルロゴ・プロンプト・ゲームオーバーは共通のフェード挙動。
+   .fade で初期状態（非表示）、.visible で display 有効化、.faded-in で opacity:1。 */
+.fade {
   text-align: center; display: none; opacity: 0;
   transition: opacity var(--hud-fade) ease;
 }
-#title-logo-wrap.visible  { display: block; }
-#title-logo-wrap.faded-in { opacity: 1; }
+.fade.visible  { display: block; }
+.fade.faded-in { opacity: 1; }
+#title-logo-wrap {
+  position: absolute; top: 8%; left: 50%;
+  transform: translateX(-50%);
+}
 #title-logo {
   font-size: 58px; font-weight: 900; letter-spacing: 7px;
   color: #fff; font-family: 'Orbitron', 'Arial Black', sans-serif;
@@ -59,11 +63,7 @@ body { background: #000; overflow: hidden; }
 #title-prompt {
   position: absolute; bottom: 7%; left: 50%;
   transform: translateX(-50%);
-  text-align: center; display: none; opacity: 0;
-  transition: opacity var(--hud-fade) ease;
 }
-#title-prompt.visible  { display: block; }
-#title-prompt.faded-in { opacity: 1; }
 #title-sub {
   font-size: 22px; letter-spacing: 4px; color: #fff;
   text-shadow: 1px 1px 6px #000; margin-bottom: 6px;
@@ -77,11 +77,7 @@ body { background: #000; overflow: hidden; }
 #gameover {
   position: absolute; top: 42%; left: 50%;
   transform: translate(-50%, -50%);
-  text-align: center; display: none; opacity: 0;
-  transition: opacity var(--hud-fade) ease;
 }
-#gameover.visible  { display: block; }
-#gameover.faded-in { opacity: 1; }
 #go-text {
   font-size: 48px; font-weight: 900; letter-spacing: 8px;
   font-family: 'Orbitron', 'Arial Black', sans-serif; color: #ff4444;
@@ -103,14 +99,14 @@ body { background: #000; overflow: hidden; }
   <div id="hud-stage">
     <div id="hs">MAX &nbsp;<span id="hs-val">0</span>m</div>
     <div id="sc"><span id="sc-val"></span></div>
-    <div id="title-logo-wrap">
+    <div id="title-logo-wrap" class="fade">
       <div id="title-logo">SPACE<span id="title-dash">&#8209;</span>JUMP</div>
     </div>
-    <div id="title-prompt">
+    <div id="title-prompt" class="fade">
       <div id="title-sub">Push to Start!</div>
       <div id="title-key">&lt; Space / ↑ &gt;</div>
     </div>
-    <div id="gameover">
+    <div id="gameover" class="fade">
       <div id="go-text">GAME OVER</div>
       <div id="go-score">Score: <span id="go-score-val">0</span>m</div>
     </div>
@@ -130,6 +126,9 @@ import * as THREE from 'three';
 const { degToRad } = THREE.MathUtils;
 const easeIn2  = t => t * t;
 const easeOut2 = t => 1 - (1 - t) * (1 - t);
+const clamp01  = t => t < 0 ? 0 : t > 1 ? 1 : t;
+const rand     = (min, max) => min + Math.random() * (max - min); // [min, max)
+const randSym  = spread => (Math.random() - 0.5) * spread;        // [-spread/2, +spread/2)
 
 // Canvas 2D 色ヘルパー（引数は 0–255 整数）。色定数は配列でもち、スプレッドで渡す: rgba(...WARP_RING, a)
 const rgba = (r, g, b, a) => `rgba(${r},${g},${b},${a})`;
@@ -218,8 +217,10 @@ const STAR_RADIUS      = 0.1;
 const STAR_SPEED_TITLE = 0.075; // [/ms]
 const STAR_SPEED_PLAY  = 0.015; // [/ms]
 const STAR_Y_MIN       = -10;
-const STAR_Y_RANGE     = 35;
+const STAR_Y_MAX       = STAR_Y_MIN + 35; // 旧 STAR_Y_RANGE=35 を上限へ畳み込み（rand 統一のため）
 const STAR_Z_RANGE     = 25;
+const STAR_RESPAWN_X_MIN = WORLD_HALF;     // 右端外からのリスポーン X 下限
+const STAR_RESPAWN_X_MAX = WORLD_HALF * 2; // 同上限
 
 // ── ロケット ─────────────────────────────────────────────────────
 const ROCKET_START_X    = -3;               // タイトル初期 / 発射開始 X
@@ -268,9 +269,10 @@ const WARP_FLASH = [200, 230, 255]; // ワープフラッシュ
 const FADE_BG    = [  0,   0,  12]; // フェード背景
 
 // ── カメラシェイク ───────────────────────────────────────────────
-const SHAKE_POWER = 0.35;
-const SHAKE_DECAY = 0.88;   // /frame 減衰率
-const SHAKE_MIN   = 0.001;  // これ以下で停止
+const SHAKE_POWER       = 0.35;
+const SHAKE_DECAY       = 0.88;  // /frame 減衰率
+const SHAKE_MIN         = 0.001; // これ以下で停止
+const SHAKE_AMP_FACTOR  = 2;     // intensity → 実変位への倍率
 
 // ── 崩壊エフェクト ───────────────────────────────────────────────
 const BURST_GRAVITY     = 0.00015;  // [/ms²]
@@ -285,6 +287,7 @@ const BURST_VY_RAND     = 0.02;     // [/ms] Y 初速ランダム幅
 const BURST_VY_HEIGHT   = 0.0125;   // パーツ高さ依存の上方向加算係数
 const BURST_VZ_SPREAD   = 0.02;     // [/ms] Z 速度散乱幅
 const BURST_SPIN_SPREAD = 0.075;    // [/ms] 回転速度散乱幅
+const BURST_HEIGHT_REF  = PLAYER_RADIUS * 2; // パーツ Y 高さの正規化基準
 
 // ── HUD ──────────────────────────────────────────────────────────
 const HS_FLASH_MS    = 2000;
@@ -323,6 +326,8 @@ const PLAYER_BTN_HALF_SPAN = PLAYER_BTN_STEP_RAD * (PLAYER_BTN_NUM - 1) / 2;
 const PLAYER_HEAD_R = PLAYER_RADIUS * PLAYER_HEAD_R_FACTOR;
 const PLAYER_HEAD_Y = PLAYER_RADIUS * PLAYER_HEAD_Y_FACTOR;
 const PLAYER_EYE_R  = PLAYER_RADIUS * PLAYER_EYE_R_FACTOR;
+// プレイヤー⇔スパイクの衝突判定半径の二乗
+const COLLISION_DIST_SQ = (SPIKE_RADIUS + PLAYER_RADIUS) ** 2;
 
 /* ================================================================
  * Renderer
@@ -388,8 +393,8 @@ const shake = {
   update() {
     if (this.intensity < SHAKE_MIN) { this.intensity = 0; cam.position.copy(CAM_POS); return; }
     cam.position.set(
-      CAM_POS.x + (Math.random() - 0.5) * 2 * this.intensity,
-      CAM_POS.y + (Math.random() - 0.5) * 2 * this.intensity,
+      CAM_POS.x + randSym(SHAKE_AMP_FACTOR * this.intensity),
+      CAM_POS.y + randSym(SHAKE_AMP_FACTOR * this.intensity),
       CAM_POS.z
     );
     this.intensity *= SHAKE_DECAY;
@@ -435,21 +440,35 @@ const GEO = {
   },
 };
 
-const mkMesh = (geo, mat)       => new THREE.Mesh(geo, mat);
-const mkSph  = (r, seg, mat)    => mkMesh(GEO.sph(r, seg), mat);
-const mkCyl  = (r, h, seg, mat) => mkMesh(GEO.cyl(r, h, seg), mat);
-const mkCone = (r, h, seg, mat) => mkMesh(GEO.cone(r, h, seg), mat);
-const mkBox  = (x, y, z, mat)   => mkMesh(GEO.box(x, y, z), mat);
+const mkMesh = (geo, mat) => new THREE.Mesh(geo, mat);
 
 /* ================================================================
- * プレイヤーパーツ定義（単一ソース）
- *   builders.player() と Burst.spawn() の双方が参照する。
+ * パーツ定義（単一ソース）
+ *   各エントリは { geo, mat, pos, rot? } の宣言的レコード。
  *   geo : 毎回生成するファクトリ（破片は独自に dispose するため共有しない）
- *   rot : [rx, ry, rz] ラジアン（省略時は [0, 0, 0]）
+ *   pos : [x, y, z]
+ *   rot : [rx, ry, rz] ラジアン（省略時は無回転）
+ *   buildParts() がこの配列から Group を組み立てる。
  * ================================================================ */
+const ZERO_ROT = [0, 0, 0];
+
+// 宣言レコードから Mesh を生成（pos/rot 適用）
+function partToMesh({ geo, mat, pos, rot = ZERO_ROT }) {
+  const m = mkMesh(geo(), mat);
+  m.position.set(...pos);
+  m.rotation.set(...rot);
+  return m;
+}
+
+// パーツ配列を 1 つの Group に組み立て
+function buildParts(parts, target = new THREE.Group()) {
+  for (const part of parts) target.add(partToMesh(part));
+  return target;
+}
+
 const PLAYER_PARTS = [
   // 胴体
-  { geo: () => GEO.sph(PLAYER_RADIUS, SEG_HI),   mat: MAT.lightBlue, pos: [0, 0, 0] },
+  { geo: () => GEO.sph(PLAYER_RADIUS, SEG_HI), mat: MAT.lightBlue, pos: [0, 0, 0] },
   // 腕（右・左）
   { geo: () => GEO.cyl(PLAYER_ARM_R, PLAYER_ARM_H, SEG_LO), mat: MAT.brown,
     pos: [ PLAYER_ARM_X, PLAYER_ARM_Y, 0], rot: [0, 0, -PLAYER_ARM_TILT_RAD] },
@@ -462,7 +481,7 @@ const PLAYER_PARTS = [
     pos: [ PLAYER_EYE_X, PLAYER_HEAD_Y + PLAYER_EYE_Y_OFS, PLAYER_EYE_Z] },
   { geo: () => GEO.sph(PLAYER_EYE_R, SEG_LO), mat: MAT.black,
     pos: [-PLAYER_EYE_X, PLAYER_HEAD_Y + PLAYER_EYE_Y_OFS, PLAYER_EYE_Z] },
-  // 鼻（X 軸方向に傾いたコーン）
+  // 鼻（X 軸方向に傾いた赤いコーン）
   { geo: () => GEO.cone(PLAYER_NOSE_R, PLAYER_NOSE_H, SEG_LO), mat: MAT.red,
     pos: [0, PLAYER_HEAD_Y + PLAYER_NOSE_Y_OFS, PLAYER_NOSE_Z], rot: [PLAYER_NOSE_TILT_RAD, 0, 0] },
   // ボタン（胴体前面に弧状配置）
@@ -481,7 +500,7 @@ const PLAYER_PARTS = [
  * ================================================================ */
 const builders = {
   ground() {
-    const m = mkBox(GROUND_W, GROUND_H, GROUND_D, MAT.ground);
+    const m = mkMesh(GEO.box(GROUND_W, GROUND_H, GROUND_D), MAT.ground);
     m.position.set(0, -GROUND_H / 2 - PLAYER_RADIUS, 0);
     return m;
   },
@@ -490,14 +509,7 @@ const builders = {
     const root   = new THREE.Group();
     const orient = new THREE.Group();
     orient.rotation.y = PLAYER_ORIENT_Y_RAD;
-
-    for (const { geo, mat, pos, rot = [0, 0, 0] } of PLAYER_PARTS) {
-      const m = mkMesh(geo(), mat);
-      m.position.set(...pos);
-      m.rotation.set(...rot);
-      orient.add(m);
-    }
-
+    buildParts(PLAYER_PARTS, orient);
     root.add(orient);
     root.userData.orient = orient; // ボブアニメ用参照
     return root;
@@ -506,9 +518,9 @@ const builders = {
   spike() {
     const root = new THREE.Group();
     root.scale.set(1, 1, SPIKE_Z_SQUASH);
-    root.add(mkSph(SPIKE_RADIUS, SEG_HI, MAT.black));
+    root.add(mkMesh(GEO.sph(SPIKE_RADIUS, SEG_HI), MAT.black));
 
-    const eye = mkSph(SPIKE_EYE_R, SEG_LO, MAT.silver);
+    const eye = mkMesh(GEO.sph(SPIKE_EYE_R, SEG_LO), MAT.silver);
     eye.position.set(0, 0, SPIKE_RADIUS * SPIKE_EYE_Z);
     eye.scale.set(...SPIKE_EYE_SCALE);
     root.add(eye);
@@ -516,7 +528,7 @@ const builders = {
     for (let i = 0; i < SPIKE_SPINE_NUM; i++) {
       const zGrp = new THREE.Group();
       zGrp.rotation.z = degToRad(360 / SPIKE_SPINE_NUM * i);
-      const cone = mkCone(SPIKE_SPINE_R, SPIKE_SPINE_LEN, SEG_LO, MAT.silver);
+      const cone = mkMesh(GEO.cone(SPIKE_SPINE_R, SPIKE_SPINE_LEN, SEG_LO), MAT.silver);
       cone.position.y = SPIKE_SPINE_LEN / 2;
       zGrp.add(cone); root.add(zGrp);
     }
@@ -524,7 +536,7 @@ const builders = {
   },
 
   star() {
-    return mkSph(STAR_RADIUS, SEG_LO, MAT.star);
+    return mkMesh(GEO.sph(STAR_RADIUS, SEG_LO), MAT.star);
   },
 
   // ロケット: 機体ローカル座標は基準半径 RAD・基準セグメント長 H で構成する
@@ -535,19 +547,19 @@ const builders = {
     const body = new THREE.Group();
     body.scale.set(...ROCKET_BODY_SCALE);
 
-    const tip    = mkCone(RAD, H, SEG_LO, MAT.red);        tip.position.y    =  H;                body.add(tip);
-    const upCyl  = mkCyl (RAD, H, SEG_LO, MAT.silver);     upCyl.position.y  =  H / 2;            body.add(upCyl);
-    const dnCyl  = mkCyl (RAD, H, SEG_LO, MAT.darkSilver); dnCyl.position.y  = -H / 2;            body.add(dnCyl);
-    const nozzle = mkCone(RAD / 2, H / 2, SEG_LO, MAT.black); nozzle.position.y = -(H + RAD / 2); body.add(nozzle);
+    const tip    = mkMesh(GEO.cone(RAD, H, SEG_LO),        MAT.red);        tip.position.y    =  H;                body.add(tip);
+    const upCyl  = mkMesh(GEO.cyl (RAD, H, SEG_LO),        MAT.silver);     upCyl.position.y  =  H / 2;            body.add(upCyl);
+    const dnCyl  = mkMesh(GEO.cyl (RAD, H, SEG_LO),        MAT.darkSilver); dnCyl.position.y  = -H / 2;            body.add(dnCyl);
+    const nozzle = mkMesh(GEO.cone(RAD / 2, H / 2, SEG_LO), MAT.black);     nozzle.position.y = -(H + RAD / 2);    body.add(nozzle);
 
     for (let i = 0; i < ROCKET_WING_NUM; i++) {
       const wg = new THREE.Group(); wg.rotation.y = degToRad(-360 / ROCKET_WING_NUM * i);
-      const wc = mkCone(RAD / 2, H / 2, SEG_LO, MAT.darkRed);
+      const wc = mkMesh(GEO.cone(RAD / 2, H / 2, SEG_LO), MAT.darkRed);
       wc.position.set(RAD, -H, 0); wc.scale.set(...ROCKET_WING_SCALE);
       wg.add(wc); body.add(wg);
     }
 
-    const glass = mkSph(RAD, SEG_MID, MAT.glass);
+    const glass = mkMesh(GEO.sph(RAD, SEG_MID), MAT.glass);
     glass.position.set(0, H / 2, ROCKET_GLASS_Z); glass.scale.set(...ROCKET_GLASS_SCALE);
     body.add(glass);
 
@@ -595,20 +607,16 @@ const rocket = { x: 0, y: 0, speed: 0, moving: false };
  * 初期化
  * ================================================================ */
 function randomizeStarYZ(m) {
-  m.position.y = STAR_Y_MIN + Math.random() * STAR_Y_RANGE;
-  m.position.z = -Math.random() * STAR_Z_RANGE;
+  m.position.y = rand(STAR_Y_MIN, STAR_Y_MAX);
+  m.position.z = -rand(0, STAR_Z_RANGE);
 }
 
 function placeStars() {
   for (const m of starMeshes) {
-    m.position.x = Math.random() * WORLD_HALF * 2 - WORLD_HALF;
+    m.position.x = rand(-WORLD_HALF, WORLD_HALF);
     randomizeStarYZ(m);
   }
 }
-
-function resetRocket() { rocket.x = ROCKET_START_X; rocket.y = 0; rocket.speed = 0; rocket.moving = false; }
-function resetPlayer() { player.x = PLAYER_X; player.y = 0; player.vy = 0; player.roll = 0; player.jumping = false; }
-function resetSpikes() { spikes.forEach((m, i) => { m.position.x = SPIKE_INIT_X * (i + SPIKE_INIT_OFS); }); }
 
 function init() {
   highScore = 0;
@@ -708,11 +716,22 @@ const TX = {
   },
 };
 
+/* ================================================================
+ * シーン遷移
+ *   旧 reset{Rocket,Player,Spikes} はここからのみ呼ばれていたため統合した。
+ * ================================================================ */
 function switchScene(next) {
   gameScene = next; score = 0; isGameOver = false;
-  resetPlayer();
-  resetSpikes();
-  if (next === SCENE.TITLE) { resetRocket(); Burst.clear(); }
+
+  // プレイヤー初期化
+  player.x = PLAYER_X; player.y = 0; player.vy = 0; player.roll = 0; player.jumping = false;
+  // スパイク初期配置（x = INIT_X * (i + OFS)）
+  spikes.forEach((m, i) => { m.position.x = SPIKE_INIT_X * (i + SPIKE_INIT_OFS); });
+
+  if (next === SCENE.TITLE) {
+    rocket.x = ROCKET_START_X; rocket.y = 0; rocket.speed = 0; rocket.moving = false;
+    Burst.clear();
+  }
 }
 
 /* ================================================================
@@ -749,8 +768,9 @@ function updateSpikes(ms) {
 
     if (!isGameOver) {
       const dx = m.position.x - player.x, dy = SPIKE_Y - player.y;
-      if (dx * dx + dy * dy < (SPIKE_RADIUS + PLAYER_RADIUS) ** 2) {
+      if (dx * dx + dy * dy < COLLISION_DIST_SQ) {
         isGameOver = true;
+        highScore  = Math.max(highScore, Math.floor(score)); // GO 確定時に 1 回だけ反映
         shake.trigger();
         Burst.spawn(player.x, player.y);
         setTimeout(() => TX.startOut(SCENE.TITLE), TX_GAMEOVER_DELAY_MS);
@@ -758,7 +778,7 @@ function updateSpikes(ms) {
     }
 
     if (m.position.x < -WORLD_HALF) {
-      m.position.x = rightmostSpikeX(i) + SPIKE_MIN_GAP + Math.random() * (SPIKE_MAX_GAP - SPIKE_MIN_GAP);
+      m.position.x = rightmostSpikeX(i) + rand(SPIKE_MIN_GAP, SPIKE_MAX_GAP);
     }
     m.rotation.z = theta * SPIKE_ROLL_RATE;
   }
@@ -772,7 +792,7 @@ function updateStars(ms) {
   for (const m of starMeshes) {
     m.position.x -= spd;
     if (m.position.x < -WORLD_HALF) {
-      m.position.x = WORLD_HALF + Math.random() * WORLD_HALF;
+      m.position.x = rand(STAR_RESPAWN_X_MIN, STAR_RESPAWN_X_MAX);
       randomizeStarYZ(m);
     }
   }
@@ -780,47 +800,54 @@ function updateStars(ms) {
 
 /* ================================================================
  * 更新 — ロケット
- *   プレイ時の公転: C1·Rx(θ)·C2
- *   C1 = Tz(ORBIT_Z), C2 = Rz(π)·Tz(ORBIT_R)（事前計算済み定数行列）
- *   毎フレームは _orbitRotX のみ更新する。
+ *   タイトル: 自転 + Y 揺れ。発射後はワープ閾値で遷移を起動。
+ *   プレイ  : C1·Rx(θ)·C2 による公転（事前計算済み定数行列を毎フレーム合成）。
+ *     C1 = Tz(ORBIT_Z), C2 = Rz(π)·Tz(ORBIT_R)
+ *     毎フレームは _orbitRotX のみ更新する。
  * ================================================================ */
 const _orbitC1 = new THREE.Matrix4().makeTranslation(0, 0, ROCKET_ORBIT_Z);
 const _orbitC2 = new THREE.Matrix4()
   .makeRotationZ(Math.PI)
   .multiply(new THREE.Matrix4().makeTranslation(0, 0, ROCKET_ORBIT_R));
-const _orbitMat  = new THREE.Matrix4();
-const _orbitRotX = new THREE.Matrix4();
+const _orbitMat   = new THREE.Matrix4();
+const _orbitRotX  = new THREE.Matrix4();
 const _orbitScale = new THREE.Vector3(); // decompose 用一時オブジェクト（毎回 new しない）
 
-function updateRocket(ms) {
-  if (gameScene === SCENE.TITLE) {
-    rocketSpin.rotation.y = theta * ROCKET_TITLE_SPIN;
-    rocket.y = Math.sin(theta * ROCKET_TITLE_BOB_FREQ) * ROCKET_TITLE_BOB_AMP;
-    if (rocket.moving) {
-      rocket.speed += ROCKET_ACCEL * ms;
-      rocket.x     += rocket.speed * ms;
-      if (rocket.x > ROCKET_WARP_X && !TX.isTransitioning) {
-        TX.startOut(SCENE.PLAY, TX_TYPE.WARP);
-        rocket.moving = false;
-        rocket.x = ROCKET_HIDE_X; rocket.speed = 0;
-      }
+function updateRocketTitle(ms) {
+  rocketSpin.rotation.y = theta * ROCKET_TITLE_SPIN;
+  rocket.y = Math.sin(theta * ROCKET_TITLE_BOB_FREQ) * ROCKET_TITLE_BOB_AMP;
+  if (rocket.moving) {
+    rocket.speed += ROCKET_ACCEL * ms;
+    rocket.x     += rocket.speed * ms;
+    if (rocket.x > ROCKET_WARP_X && !TX.isTransitioning) {
+      TX.startOut(SCENE.PLAY, TX_TYPE.WARP);
+      rocket.moving = false;
+      rocket.x = ROCKET_HIDE_X; rocket.speed = 0;
     }
-    rocketMesh.position.set(rocket.x, rocket.y + ROCKET_TITLE_Y_OFS, ROCKET_TITLE_Z);
-    rocketMesh.rotation.set(0, 0, ROCKET_TITLE_ROLL_RAD);
-  } else {
-    const spinAngle = theta * ROCKET_PLAY_SPIN;
-    rocketSpin.rotation.y = spinAngle;
-    _orbitMat.copy(_orbitC1)
-      .multiply(_orbitRotX.makeRotationX(spinAngle))
-      .multiply(_orbitC2);
-    _orbitMat.decompose(rocketMesh.position, rocketMesh.quaternion, _orbitScale);
   }
+  rocketMesh.position.set(rocket.x, rocket.y + ROCKET_TITLE_Y_OFS, ROCKET_TITLE_Z);
+  rocketMesh.rotation.set(0, 0, ROCKET_TITLE_ROLL_RAD);
+}
+
+function updateRocketPlay() {
+  const spinAngle = theta * ROCKET_PLAY_SPIN;
+  rocketSpin.rotation.y = spinAngle;
+  _orbitMat.copy(_orbitC1)
+    .multiply(_orbitRotX.makeRotationX(spinAngle))
+    .multiply(_orbitC2);
+  _orbitMat.decompose(rocketMesh.position, rocketMesh.quaternion, _orbitScale);
+}
+
+function updateRocket(ms) {
+  if (gameScene === SCENE.TITLE) updateRocketTitle(ms);
+  else                           updateRocketPlay();
 }
 
 /* ================================================================
  * 崩壊エフェクト (Burst)
  *   PLAYER_PARTS の各パーツを orient ローカル座標からワールド座標へ変換して飛散。
  *   orient の Y 軸回転（PLAYER_ORIENT_Y_RAD）のみ適用する。
+ *   パーツ固有の rot（腕・鼻の傾き）も初期姿勢として保持する。
  * ================================================================ */
 const _orientEuler = new THREE.Euler(0, PLAYER_ORIENT_Y_RAD, 0);
 
@@ -829,22 +856,24 @@ const Burst = {
 
   spawn(wx, wy) {
     const localPos = new THREE.Vector3();
-    for (const { geo, mat, pos } of PLAYER_PARTS) {
-      const m = mkMesh(geo(), mat.clone());
+    for (const part of PLAYER_PARTS) {
+      const { pos } = part;
+      const m = partToMesh({ ...part, mat: part.mat.clone() });
       m.material.transparent = true; m.material.opacity = 1;
       scene.add(m);
 
+      // orient の Y 回転をワールド配置に適用（パーツ固有 rot は partToMesh が適用済み）
       localPos.set(...pos).applyEuler(_orientEuler);
       m.position.set(wx + localPos.x, wy + localPos.y, localPos.z);
 
       this.particles.push({
         mesh: m,
-        vx: (Math.random() - 0.5) * BURST_VX_SPREAD,
-        vy: BURST_VY_BASE + Math.random() * BURST_VY_RAND + (pos[1] / (PLAYER_RADIUS * 2)) * BURST_VY_HEIGHT,
-        vz: (Math.random() - 0.5) * BURST_VZ_SPREAD,
-        rx: (Math.random() - 0.5) * BURST_SPIN_SPREAD,
-        ry: (Math.random() - 0.5) * BURST_SPIN_SPREAD,
-        rz: (Math.random() - 0.5) * BURST_SPIN_SPREAD,
+        vx: randSym(BURST_VX_SPREAD),
+        vy: BURST_VY_BASE + Math.random() * BURST_VY_RAND + (pos[1] / BURST_HEIGHT_REF) * BURST_VY_HEIGHT,
+        vz: randSym(BURST_VZ_SPREAD),
+        rx: randSym(BURST_SPIN_SPREAD),
+        ry: randSym(BURST_SPIN_SPREAD),
+        rz: randSym(BURST_SPIN_SPREAD),
         life: 0,
       });
     }
@@ -869,10 +898,10 @@ const Burst = {
       p.mesh.rotation.y += p.ry * ms;
       p.mesh.rotation.z += p.rz * ms;
 
-      const fade = 1 - Math.max(0,
+      // 寿命後半でフェードアウト（FADE_START 以降を 1→0 へ線形）
+      p.mesh.material.opacity = 1 - clamp01(
         (p.life - BURST_LIFE_MS * BURST_FADE_START) / (BURST_LIFE_MS * (1 - BURST_FADE_START))
       );
-      p.mesh.material.opacity = fade;
     }
   },
 
@@ -916,6 +945,9 @@ function setFadeEl(el, show) {
   }
 }
 
+// タイトル系（ロゴ＋プロンプト）はまとめてフェードするため配列で管理
+const titleFadeEls = [elTitleLogo, elTitlePrompt];
+
 function updateHUD() {
   // highScore は変化時のみ DOM 反映（初期値 0 は HTML 既定表示 "0" と一致するため初回書き込み不要）
   if (highScore !== hudState.lastHS) {
@@ -934,8 +966,7 @@ function updateHUD() {
   const showTitle = gameScene === SCENE.TITLE && !TX.isTransitioning;
   if (showTitle !== hudState.titleShown) {
     hudState.titleShown = showTitle;
-    setFadeEl(elTitleLogo,   showTitle);
-    setFadeEl(elTitlePrompt, showTitle);
+    for (const el of titleFadeEls) setFadeEl(el, showTitle);
   }
   if (showTitle) elTitleLogoTx.style.transform = `translateY(${Math.sin(theta * TITLE_BOB_FREQ) * TITLE_BOB_AMP}px)`;
 
@@ -998,7 +1029,6 @@ function animate(now) {
     updateSpikes(ms);
   }
   if (inGame) updatePlayer(ms); // 遷移中・ゲームオーバー中も落下/着地を継続
-  if (inGame && isGameOver) highScore = Math.max(highScore, Math.floor(score));
 
   updateHUD();
   shake.update();
